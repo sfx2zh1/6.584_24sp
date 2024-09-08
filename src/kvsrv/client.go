@@ -65,7 +65,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	args := &PutAppendArgs{key, value, ck.id, ck.requsetid}
 	ok := ck.server.Call("KVServer."+op, args, reply)
 	for !ok {
-		ok = ck.server.Call("KVServer.Get", args, reply)
+		ok = ck.server.Call("KVServer."+op, args, reply)
 	}
 	return reply.Value
 }
