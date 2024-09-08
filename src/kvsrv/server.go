@@ -14,30 +14,35 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type KVServer struct {
-	mu sync.Mutex
-
-	// Your definitions here.
+	mu   sync.Mutex
+	stor map[string]string
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	val, ok := kv.stor[args.Key]
+	if ok {
+		reply.Value = val
+	}
+	reply.Value = ""
+	return
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.stor[args.Key] = args.Value
+	reply.Value = kv.stor[args.Key]
+	return
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.stor[args.Key] += args.Value
+	reply.Value = kv.stor[args.Key]
+	return
 }
 
 func StartKVServer() *KVServer {
 	kv := new(KVServer)
-
-	// You may need initialization code here.
+	kv.stor = make(map[string]string)
 
 	return kv
 }
