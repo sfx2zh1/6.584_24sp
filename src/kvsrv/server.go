@@ -24,13 +24,13 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if args.RequsetId == kv.lastReq[args.ClientId] {
-		reply.Value = kv.lastResult[args.ClientId]
-		return
+	if args.RequsetId >= kv.lastReq[args.ClientId] {
+		kv.lastResult[args.ClientId] = ""
+		//return
 	}
 	val := kv.stor[args.Key]
 	reply.Value = val
-	kv.lastReq[args.ClientId], kv.lastResult[args.ClientId] = args.RequsetId, reply.Value
+	kv.lastReq[args.ClientId], kv.lastResult[args.ClientId] = args.RequsetId, ""
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
