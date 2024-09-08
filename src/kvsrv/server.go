@@ -20,23 +20,28 @@ type KVServer struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	val, ok := kv.stor[args.Key]
 	if ok {
 		reply.Value = val
+		return
 	}
 	reply.Value = ""
-	return
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.stor[args.Key] = args.Value
-	reply.Value = kv.stor[args.Key]
 	return
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.stor[args.Key] += args.Value
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	reply.Value = kv.stor[args.Key]
+	kv.stor[args.Key] += args.Value
 	return
 }
 

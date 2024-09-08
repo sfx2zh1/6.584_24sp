@@ -5,11 +5,14 @@ import (
 	//"fmt"
 	"math/big"
 
+	//"sync"
+
 	"6.5840/labrpc"
 )
 
 type Clerk struct {
 	server *labrpc.ClientEnd
+	//mu     sync.Mutex
 	// You will have to modify this struct.
 }
 
@@ -41,7 +44,7 @@ func (ck *Clerk) Get(key string) string {
 	reply := &GetReply{}
 	args := &GetArgs{key}
 	ok := ck.server.Call("KVServer.Get", args, reply)
-	//fmt.Println("Doing Get", args, "reply is", reply)
+	// fmt.Println("Doing Get", args, "reply is", reply)
 	if ok {
 		return reply.Value
 	}
@@ -60,7 +63,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	reply := &PutAppendReply{}
 	args := &PutAppendArgs{key, value}
 	ok := ck.server.Call("KVServer."+op, args, reply)
-	//fmt.Println("Doing ", op, args, "reply is", reply)
+	// fmt.Println("Doing ", op, args, "reply is", reply)
 	if ok {
 		return reply.Value
 	}
