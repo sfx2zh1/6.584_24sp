@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	"fmt"
+	//"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -176,7 +176,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.haveHeartBeat = true
 		rf.isCandidate = false     // once receive a candidate has larger term, no longer a candi
 		rf.currentTerm = args.Term // TODO: TMP change for 3A Maybe better way is to record a candidate's term
-		fmt.Println(rf.me, "vote for", args.CandidateId)
+		//fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
 	reply.Term = rf.currentTerm
 }
@@ -216,7 +216,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) beCandadite() {
 	rf.currentTerm += 1
 	runningTerm := rf.currentTerm // perevent term get change by leader during a running, as only after send all reqVote to count the vote
-	fmt.Println("Node", rf.me, "running for term", runningTerm)
+	//fmt.Println("Node", rf.me, "running for term", runningTerm)
 	rf.isCandidate = true
 	rf.votedFor = rf.me
 	rf.voteCount = VoteCount{} // new running, new voteCount! (old vote will not count)
@@ -226,7 +226,7 @@ func (rf *Raft) beCandadite() {
 	for id := 0; id < rf.peerNum; id++ {
 		if id != rf.me && rf.isCandidate {
 			go func(id int) {
-				fmt.Printf("Node %v is asking %v for a vote \n", rf.me, id)
+				//fmt.Printf("Node %v is asking %v for a vote \n", rf.me, id)
 				ok := false
 				reply := &RequestVoteReply{}
 				request := &RequestVoteArgs{
@@ -236,13 +236,13 @@ func (rf *Raft) beCandadite() {
 					ok = rf.sendRequestVote(id, request, reply)
 				}
 				if reply.VoteGranted {
-					fmt.Println("Node", rf.me, "get a vote!")
+					//fmt.Println("Node", rf.me, "get a vote!")
 					rf.voteCount.newVote()
 					votes := rf.voteCount.getVote()
-					fmt.Println("Node", rf.me, "now vote number:", votes, "Majority is", len(rf.peers)/2)
+					//fmt.Println("Node", rf.me, "now vote number:", votes, "Majority is", len(rf.peers)/2)
 					if rf.isCandidate && votes > len(rf.peers)/2 { // STATE CHANGE 4
 						rf.isCandidate, rf.isLeader = false, true
-						fmt.Println("Node", rf.me, "now thinging it is the leader!")
+						//fmt.Println("Node", rf.me, "now thinging it is the leader!")
 						rf.doLeaderJob()
 						return
 					}
@@ -286,11 +286,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply = &AppendEntriesReply{Term: rf.currentTerm, Success: true}
 		if args.Term > rf.currentTerm { // TODO: Term sync for lab 3A
 			rf.currentTerm = args.Term
-			//fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
+			////fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
 		}
 		rf.isCandidate, rf.isLeader = false, false
 		rf.haveHeartBeat = true
-		//fmt.Printf("Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.currentTerm)
+		////fmt.Printf("Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.currentTerm)
 		return
 	}
 	reply = &AppendEntriesReply{rf.currentTerm, false}
@@ -298,7 +298,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 // AppendEntries BoradCaster
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	//fmt.Println("Node", rf.me, "is sending AppendEntries to Node", server)
+	////fmt.Println("Node", rf.me, "is sending AppendEntries to Node", server)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
