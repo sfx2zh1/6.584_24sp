@@ -146,11 +146,15 @@ func (rf *Raft) getCurrentTerm() int {
 	return rf.state.currentTerm
 }
 
+// also implemtnet rule 2, bigger means follower
 func (rf *Raft) setCurrentTerm(t int) bool {
 	rf.state.mu.Lock()
 	defer rf.state.mu.Unlock()
 	if t < rf.state.currentTerm {
 		return false
+	}
+	if t > rf.state.currentTerm { // figure2 allserver rule 2
+		rf.state.code = 0
 	}
 	rf.state.currentTerm = t
 	return true
@@ -242,8 +246,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.getCurrentTerm() { // STATE CHANGE 6-B a higher term
 		rf.setHeartBeatState(true)
 		rf.voteFor(args.CandidateId)
-		rf.setState(0) // once receive a candidate has larger term, be a follower
-		rf.setCurrentTerm(args.Term)
+		rf.setCurrentTerm(args.Term) // once receive a candidate has larger term, be a follower
 		reply.VoteGranted = true
 		//fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
@@ -314,7 +317,7 @@ func (rf *Raft) beCandadite() {
 					}
 				}
 				if reply.Term > rf.getCurrentTerm() {
-					rf.setState(0)
+					rf.setCurrentTerm(reply.Term)
 				}
 			}(id)
 		}
@@ -352,7 +355,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply = &AppendEntriesReply{Term: args.Term, Success: true}
 		if args.Term > rf.getCurrentTerm() { // TODO: Term sync for lab 3A
 			rf.setCurrentTerm(args.Term)
-			rf.setState(0)
 			////fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
 		}
 		rf.setState(0)
@@ -384,7 +386,7 @@ func (rf *Raft) doLeaderJob() {
 					ok = rf.sendAppendEntries(id, args, reply)
 				}
 				if reply.Term > rf.getCurrentTerm() { //STATE CHANGE 5
-					rf.setState(0)
+					rf.setCurrentTerm(reply.Term) //+ALL server rule 2
 				}
 			}(id)
 		}
