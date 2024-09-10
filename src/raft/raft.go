@@ -63,9 +63,8 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm   int
 	votedFor      int
-	isLeader      bool
-	isCandidate   bool
 	voteCount     VoteCount
+	state         State
 	haveHeartBeat bool
 	peerNum       int
 	//log []string
@@ -94,11 +93,31 @@ func (vk *VoteCount) getVote() int {
 	return vk.count
 }
 
+// independent mu-shared State
+type State struct {
+	mu   sync.Mutex
+	code int
+}
+
+// return state 0 as fo, 1 as candi, 2 as leader
+func (st *State) getState() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.code
+}
+
+// set state
+func (st *State) setState(newCode int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.code = newCode
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (3A).
-	term, isleader := rf.currentTerm, rf.isLeader
+	term, isleader := rf.currentTerm, rf.state.getState() == 2
 	return term, isleader
 }
 
@@ -171,11 +190,13 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	if args.Term > rf.currentTerm { // STATE CHANGE 6-B a higher term
+		rf.mu.Lock()
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		rf.haveHeartBeat = true
-		rf.isCandidate = false     // once receive a candidate has larger term, no longer a candi
-		rf.currentTerm = args.Term // TODO: TMP change for 3A Maybe better way is to record a candidate's term
+		rf.state.setState(0) // once receive a candidate has larger term, be a follower
+		rf.currentTerm = args.Term
+		rf.mu.Unlock()
 		//fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
 	reply.Term = rf.currentTerm
@@ -214,17 +235,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) beCandadite() {
+	rf.mu.Lock()
 	rf.currentTerm += 1
 	runningTerm := rf.currentTerm // perevent term get change by leader during a running, as only after send all reqVote to count the vote
 	//fmt.Println("Node", rf.me, "running for term", runningTerm)
-	rf.isCandidate = true
+	rf.state.setState(1) // be candidate
 	rf.votedFor = rf.me
 	rf.voteCount = VoteCount{} // new running, new voteCount! (old vote will not count)
 	rf.voteCount.newVote()     // Don't forget to vote for oneself
+	rf.mu.Unlock()
 
 	// Request other nodes to vote and count the votes
 	for id := 0; id < rf.peerNum; id++ {
-		if id != rf.me && rf.isCandidate {
+		if id != rf.me && rf.state.getState() == 1 {
 			go func(id int) {
 				//fmt.Printf("Node %v is asking %v for a vote \n", rf.me, id)
 				ok := false
@@ -232,7 +255,7 @@ func (rf *Raft) beCandadite() {
 				request := &RequestVoteArgs{
 					CandidateId: rf.me, Term: runningTerm,
 				}
-				for !ok && rf.isCandidate {
+				for !ok && rf.state.getState() == 1 {
 					ok = rf.sendRequestVote(id, request, reply)
 				}
 				if reply.VoteGranted {
@@ -240,15 +263,15 @@ func (rf *Raft) beCandadite() {
 					rf.voteCount.newVote()
 					votes := rf.voteCount.getVote()
 					//fmt.Println("Node", rf.me, "now vote number:", votes, "Majority is", len(rf.peers)/2)
-					if rf.isCandidate && votes > len(rf.peers)/2 { // STATE CHANGE 4
-						rf.isCandidate, rf.isLeader = false, true
+					if rf.state.getState() == 1 && votes > len(rf.peers)/2 { // STATE CHANGE 4
+						rf.state.setState(2)
 						//fmt.Println("Node", rf.me, "now thinging it is the leader!")
 						rf.doLeaderJob()
 						return
 					}
 				}
 				if reply.Term > rf.currentTerm {
-					rf.isCandidate = false
+					rf.state.setState(0)
 				}
 			}(id)
 		}
@@ -285,10 +308,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm { // STATE CHANGE 5,6 A leader or a highger term
 		reply = &AppendEntriesReply{Term: rf.currentTerm, Success: true}
 		if args.Term > rf.currentTerm { // TODO: Term sync for lab 3A
+			rf.mu.Lock()
 			rf.currentTerm = args.Term
+			rf.state.setState(0)
+			rf.mu.Unlock()
 			////fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
 		}
-		rf.isCandidate, rf.isLeader = false, false
+		rf.state.setState(0)
 		rf.haveHeartBeat = true
 		////fmt.Printf("Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.currentTerm)
 		return
@@ -317,7 +343,7 @@ func (rf *Raft) doLeaderJob() {
 					ok = rf.sendAppendEntries(id, args, reply)
 				}
 				if reply.Term > rf.currentTerm { //STATE CHANGE 5
-					rf.isLeader = false
+					rf.state.setState(0)
 				}
 			}(id)
 		}
@@ -376,8 +402,8 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		// Paper: broadcast time should be an order of magnitude less than the election timeout
 		// STATE CHANGE 2,3 be Candi
-		if !rf.haveHeartBeat && !rf.isLeader {
-			rf.isCandidate = false // STATE CHANGE 3, Candi to Candi, set to false to end last elect cycle, see STATE CHANGE 5
+		if !rf.haveHeartBeat && rf.state.getState() != 2 {
+			rf.state.setState(0) // STATE CHANGE 3, Candi to Candi, set to false to end last elect cycle, see STATE CHANGE 5
 			go rf.beCandadite()
 		}
 		rf.haveHeartBeat = false
@@ -387,7 +413,7 @@ func (rf *Raft) ticker() {
 func (rf *Raft) tickerLeader() {
 	for rf.killed() == false {
 		// Do leader's send AppendEntries job
-		if rf.isLeader {
+		if rf.state.getState() == 2 {
 			rf.doLeaderJob()
 		}
 
