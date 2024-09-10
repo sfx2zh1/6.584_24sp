@@ -61,12 +61,9 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	currentTerm   int
-	votedFor      int
-	voteCount     VoteCount
-	state         State
-	haveHeartBeat bool
-	peerNum       int
+	voteState VoteState
+	state     State
+	peerNum   int
 	//log []string
 	//commitIndex int
 	//lastAplied int
@@ -75,49 +72,102 @@ type Raft struct {
 
 }
 
-// indepent locked vote count
-type VoteCount struct {
-	count int
-	mu    sync.Mutex
+// indepent locked voteState
+type VoteState struct {
+	count    int
+	votedFor int
+	mu       sync.Mutex
 }
 
-func (vk *VoteCount) newVote() {
-	vk.mu.Lock()
-	defer vk.mu.Unlock()
-	vk.count++
+func (rf *Raft) newVote() {
+	rf.voteState.mu.Lock()
+	defer rf.voteState.mu.Unlock()
+	rf.voteState.count++
 }
 
-func (vk *VoteCount) getVote() int {
-	vk.mu.Lock()
-	defer vk.mu.Unlock()
-	return vk.count
+func (rf *Raft) getVote() int {
+	rf.voteState.mu.Lock()
+	defer rf.voteState.mu.Unlock()
+	return rf.voteState.count
+}
+
+func (rf *Raft) voteFor(n int) {
+	rf.voteState.mu.Lock()
+	defer rf.voteState.mu.Unlock()
+	rf.voteState.votedFor = n
+	if n == rf.me {
+		rf.voteState.count++
+	}
+}
+
+func (rf *Raft) getVotedFor() int {
+	rf.voteState.mu.Lock()
+	defer rf.voteState.mu.Unlock()
+	return rf.voteState.votedFor
 }
 
 // independent mu-shared State
 type State struct {
-	mu   sync.Mutex
-	code int
+	mu            sync.Mutex
+	code          int
+	currentTerm   int
+	haveHeartBeat bool
 }
 
 // return state 0 as fo, 1 as candi, 2 as leader
-func (st *State) getState() int {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.code
+func (rf *Raft) getState() int {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	return rf.state.code
 }
 
 // set state
-func (st *State) setState(newCode int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.code = newCode
+func (rf *Raft) setState(newCode int) {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	rf.state.code = newCode
+}
+
+func (rf *Raft) setHeartBeatState(st bool) {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	rf.state.haveHeartBeat = st
+}
+
+func (rf *Raft) getHeartBeatState() bool {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	return rf.state.haveHeartBeat
+}
+
+func (rf *Raft) getCurrentTerm() int {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	return rf.state.currentTerm
+}
+
+func (rf *Raft) setCurrentTerm(t int) bool {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	if t < rf.state.currentTerm {
+		return false
+	}
+	rf.state.currentTerm = t
+	return true
+}
+
+func (rf *Raft) incremnetCurrentTerm() int {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	rf.state.currentTerm++
+	return rf.state.currentTerm
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (3A).
-	term, isleader := rf.currentTerm, rf.state.getState() == 2
+	term, isleader := rf.getCurrentTerm(), rf.getState() == 2
 	return term, isleader
 }
 
@@ -189,17 +239,15 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	if args.Term > rf.currentTerm { // STATE CHANGE 6-B a higher term
-		rf.mu.Lock()
+	if args.Term > rf.getCurrentTerm() { // STATE CHANGE 6-B a higher term
+		rf.setHeartBeatState(true)
+		rf.voteFor(args.CandidateId)
+		rf.setState(0) // once receive a candidate has larger term, be a follower
+		rf.setCurrentTerm(args.Term)
 		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-		rf.haveHeartBeat = true
-		rf.state.setState(0) // once receive a candidate has larger term, be a follower
-		rf.currentTerm = args.Term
-		rf.mu.Unlock()
 		//fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
-	reply.Term = rf.currentTerm
+	reply.Term = rf.getCurrentTerm()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -235,19 +283,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) beCandadite() {
-	rf.mu.Lock()
-	rf.currentTerm += 1
-	runningTerm := rf.currentTerm // perevent term get change by leader during a running, as only after send all reqVote to count the vote
+	runningTerm := rf.incremnetCurrentTerm() // perevent term get change by leader during a running, as only after send all reqVote to count the vote
 	//fmt.Println("Node", rf.me, "running for term", runningTerm)
-	rf.state.setState(1) // be candidate
-	rf.votedFor = rf.me
-	rf.voteCount = VoteCount{} // new running, new voteCount! (old vote will not count)
-	rf.voteCount.newVote()     // Don't forget to vote for oneself
-	rf.mu.Unlock()
+	rf.setState(1)             // be candidate
+	rf.voteState = VoteState{} // new running, new voteCount! (old vote will not count)
+	rf.voteFor(rf.me)          // Vote count for oneself is also down is this func
 
 	// Request other nodes to vote and count the votes
 	for id := 0; id < rf.peerNum; id++ {
-		if id != rf.me && rf.state.getState() == 1 {
+		if id != rf.me && rf.getState() == 1 {
 			go func(id int) {
 				//fmt.Printf("Node %v is asking %v for a vote \n", rf.me, id)
 				ok := false
@@ -255,23 +299,22 @@ func (rf *Raft) beCandadite() {
 				request := &RequestVoteArgs{
 					CandidateId: rf.me, Term: runningTerm,
 				}
-				for !ok && rf.state.getState() == 1 {
+				for !ok && rf.getState() == 1 {
 					ok = rf.sendRequestVote(id, request, reply)
 				}
 				if reply.VoteGranted {
 					//fmt.Println("Node", rf.me, "get a vote!")
-					rf.voteCount.newVote()
-					votes := rf.voteCount.getVote()
+					rf.newVote()
 					//fmt.Println("Node", rf.me, "now vote number:", votes, "Majority is", len(rf.peers)/2)
-					if rf.state.getState() == 1 && votes > len(rf.peers)/2 { // STATE CHANGE 4
-						rf.state.setState(2)
+					if rf.getState() == 1 && rf.getVote() > len(rf.peers)/2 { // STATE CHANGE 4
+						rf.setState(2)
 						//fmt.Println("Node", rf.me, "now thinging it is the leader!")
 						rf.doLeaderJob()
 						return
 					}
 				}
-				if reply.Term > rf.currentTerm {
-					rf.state.setState(0)
+				if reply.Term > rf.getCurrentTerm() {
+					rf.setState(0)
 				}
 			}(id)
 		}
@@ -305,21 +348,19 @@ type AppendEntriesReply struct {
 
 // AppendEntries Handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term >= rf.currentTerm { // STATE CHANGE 5,6 A leader or a highger term
-		reply = &AppendEntriesReply{Term: rf.currentTerm, Success: true}
-		if args.Term > rf.currentTerm { // TODO: Term sync for lab 3A
-			rf.mu.Lock()
-			rf.currentTerm = args.Term
-			rf.state.setState(0)
-			rf.mu.Unlock()
+	if args.Term >= rf.getCurrentTerm() { // STATE CHANGE 5,6 A leader or a highger term
+		reply = &AppendEntriesReply{Term: args.Term, Success: true}
+		if args.Term > rf.getCurrentTerm() { // TODO: Term sync for lab 3A
+			rf.setCurrentTerm(args.Term)
+			rf.setState(0)
 			////fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
 		}
-		rf.state.setState(0)
-		rf.haveHeartBeat = true
+		rf.setState(0)
+		rf.setHeartBeatState(true)
 		////fmt.Printf("Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.currentTerm)
 		return
 	}
-	reply = &AppendEntriesReply{rf.currentTerm, false}
+	reply = &AppendEntriesReply{rf.getCurrentTerm(), false}
 }
 
 // AppendEntries BoradCaster
@@ -336,14 +377,14 @@ func (rf *Raft) doLeaderJob() {
 			go func(id int) {
 				ok := false
 				args := &AppendEntriesArgs{
-					LeaderId: rf.me, Term: rf.currentTerm,
+					LeaderId: rf.me, Term: rf.getCurrentTerm(),
 				}
 				reply := &AppendEntriesReply{}
 				for !ok {
 					ok = rf.sendAppendEntries(id, args, reply)
 				}
-				if reply.Term > rf.currentTerm { //STATE CHANGE 5
-					rf.state.setState(0)
+				if reply.Term > rf.getCurrentTerm() { //STATE CHANGE 5
+					rf.setState(0)
 				}
 			}(id)
 		}
@@ -402,18 +443,18 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		// Paper: broadcast time should be an order of magnitude less than the election timeout
 		// STATE CHANGE 2,3 be Candi
-		if !rf.haveHeartBeat && rf.state.getState() != 2 {
-			rf.state.setState(0) // STATE CHANGE 3, Candi to Candi, set to false to end last elect cycle, see STATE CHANGE 5
+		if !rf.getHeartBeatState() && rf.getState() != 2 {
+			rf.setState(0) // STATE CHANGE 3, Candi to Candi, set to false to end last elect cycle, see STATE CHANGE 5
 			go rf.beCandadite()
 		}
-		rf.haveHeartBeat = false
+		rf.setHeartBeatState(false)
 	}
 }
 
 func (rf *Raft) tickerLeader() {
 	for rf.killed() == false {
 		// Do leader's send AppendEntries job
-		if rf.state.getState() == 2 {
+		if rf.getState() == 2 {
 			rf.doLeaderJob()
 		}
 
@@ -441,8 +482,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
-	rf.votedFor = -1
-	rf.voteCount = VoteCount{}
+	rf.voteState = VoteState{}
+	rf.state = State{}
 	rf.peerNum = len(rf.peers)
 
 	// initialize from state persisted before a crash
