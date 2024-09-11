@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	//"fmt"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -64,12 +64,35 @@ type Raft struct {
 	voteState VoteState
 	state     State
 	peerNum   int
-	//log []string
-	//commitIndex int
-	//lastAplied int
-	//nextIndex []int
-	//matchIndex []int
+	log       LogStorage
+}
 
+type LogStorage struct {
+	mu           sync.Mutex
+	log          []Log
+	commitIndex  int
+	lastAplied   int
+	lastLogIndex int
+	lastLogTerm  int
+	nextIndex    []int
+	matchIndex   []int
+}
+
+type Log struct {
+	term  int
+	index int
+	store interface{}
+}
+
+// append log and return log No
+func (rf *Raft) appendLog(log interface{}) (index, term int) {
+	rf.log.mu.Lock()
+	defer rf.log.mu.Unlock()
+	currTerm := rf.getCurrentTerm()
+	rf.log.lastLogIndex++
+	rf.log.lastLogTerm = currTerm
+	rf.log.log = append(rf.log.log, Log{term: currTerm, store: log, index: rf.log.lastLogIndex})
+	return rf.log.lastLogIndex, rf.log.lastLogTerm
 }
 
 // indepent locked voteState
@@ -108,10 +131,11 @@ func (rf *Raft) getVotedFor() int {
 
 // independent mu-shared State
 type State struct {
-	mu            sync.Mutex
-	code          int
-	currentTerm   int
-	haveHeartBeat bool
+	mu                    sync.Mutex
+	code                  int
+	currentTerm           int
+	haveHeartBeat         bool
+	hasSendGoroutineLunch []bool
 }
 
 // return state 0 as fo, 1 as candi, 2 as leader
@@ -126,6 +150,13 @@ func (rf *Raft) setState(newCode int) {
 	rf.state.mu.Lock()
 	defer rf.state.mu.Unlock()
 	rf.state.code = newCode
+}
+
+func (rf *Raft) changeTheStateToLeader() {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	rf.state.hasSendGoroutineLunch = make([]bool, rf.peerNum)
+	rf.state.code = 2
 }
 
 func (rf *Raft) setHeartBeatState(st bool) {
@@ -150,11 +181,15 @@ func (rf *Raft) getCurrentTerm() int {
 func (rf *Raft) setCurrentTerm(t int) bool {
 	rf.state.mu.Lock()
 	defer rf.state.mu.Unlock()
+	fmt.Printf("Changing Current Term for Node %v, ori %v, target %v \n", rf.me, rf.state.currentTerm, t)
 	if t < rf.state.currentTerm {
+		fmt.Printf("Error: Smaller term \n")
 		return false
 	}
 	if t > rf.state.currentTerm { // figure2 allserver rule 2
+		fmt.Printf("Downgrading: Bigger term, be FO \n")
 		rf.state.code = 0
+
 	}
 	rf.state.currentTerm = t
 	return true
@@ -165,6 +200,18 @@ func (rf *Raft) incremnetCurrentTerm() int {
 	defer rf.state.mu.Unlock()
 	rf.state.currentTerm++
 	return rf.state.currentTerm
+}
+
+func (rf *Raft) getFollowerSendGoroutineState(n int) bool {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	return rf.state.hasSendGoroutineLunch[n]
+}
+
+func (rf *Raft) setFollowerSendGoroutineState(n int, b bool) {
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	rf.state.hasSendGoroutineLunch[n] = b
 }
 
 // return currentTerm and whether this server
@@ -248,7 +295,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.voteFor(args.CandidateId)
 		rf.setCurrentTerm(args.Term) // once receive a candidate has larger term, be a follower
 		reply.VoteGranted = true
-		//fmt.Println(rf.me, "vote for", args.CandidateId)
+		fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
 	reply.Term = rf.getCurrentTerm()
 }
@@ -280,6 +327,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
+
+// Simple Send without rerty!!!
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
@@ -287,7 +336,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) beCandadite() {
 	runningTerm := rf.incremnetCurrentTerm() // perevent term get change by leader during a running, as only after send all reqVote to count the vote
-	//fmt.Println("Node", rf.me, "running for term", runningTerm)
+	fmt.Printf("BeCandaite: Node %v is running for term %v \n", rf.me, runningTerm)
 	rf.setState(1)             // be candidate
 	rf.voteState = VoteState{} // new running, new voteCount! (old vote will not count)
 	rf.voteFor(rf.me)          // Vote count for oneself is also down is this func
@@ -296,7 +345,7 @@ func (rf *Raft) beCandadite() {
 	for id := 0; id < rf.peerNum; id++ {
 		if id != rf.me && rf.getState() == 1 {
 			go func(id int) {
-				//fmt.Printf("Node %v is asking %v for a vote \n", rf.me, id)
+				fmt.Printf("Candaite: Node %v is asking %v for a vote \n", rf.me, id)
 				ok := false
 				reply := &RequestVoteReply{}
 				request := &RequestVoteArgs{
@@ -304,14 +353,15 @@ func (rf *Raft) beCandadite() {
 				}
 				for !ok && rf.getState() == 1 {
 					ok = rf.sendRequestVote(id, request, reply)
+					fmt.Printf("Retrying SendRequestVote: Node %v think it unsuccessfullly send to Node %v \n", rf.me, id)
 				}
 				if reply.VoteGranted {
-					//fmt.Println("Node", rf.me, "get a vote!")
+					fmt.Printf("Candaite: Node %v get a vote! \n", rf.me)
 					rf.newVote()
-					//fmt.Println("Node", rf.me, "now vote number:", votes, "Majority is", len(rf.peers)/2)
+					fmt.Printf("Candaite: Node %v now vote number: %v, Majority is %v \n", rf.me, rf.getVote(), len(rf.peers)/2)
 					if rf.getState() == 1 && rf.getVote() > len(rf.peers)/2 { // STATE CHANGE 4
-						rf.setState(2)
-						//fmt.Println("Node", rf.me, "now thinging it is the leader!")
+						rf.changeTheStateToLeader()
+						fmt.Printf("Candaite: Node %v now thinging it is the leader!, Term %v\n", rf.me, rf.getCurrentTerm())
 						rf.doLeaderJob()
 						return
 					}
@@ -352,22 +402,23 @@ type AppendEntriesReply struct {
 // AppendEntries Handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if args.Term >= rf.getCurrentTerm() { // STATE CHANGE 5,6 A leader or a highger term
-		reply = &AppendEntriesReply{Term: args.Term, Success: true}
-		if args.Term > rf.getCurrentTerm() { // TODO: Term sync for lab 3A
-			rf.setCurrentTerm(args.Term)
-			////fmt.Printf("Node %v is receving AppendEntries, updating current term \n", rf.me)
-		}
 		rf.setState(0)
 		rf.setHeartBeatState(true)
-		////fmt.Printf("Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.currentTerm)
+		reply = &AppendEntriesReply{Term: args.Term, Success: true}
+		if args.Term > rf.getCurrentTerm() {
+			rf.setCurrentTerm(args.Term) // term sync
+			fmt.Printf("Follower: Node %v is receving AppendEntries, updating current term \n", rf.me)
+		}
+		fmt.Printf("Follower: Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.getCurrentTerm())
 		return
 	}
 	reply = &AppendEntriesReply{rf.getCurrentTerm(), false}
 }
 
 // AppendEntries BoradCaster
+// Add retry with controlable timeout
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	////fmt.Println("Node", rf.me, "is sending AppendEntries to Node", server)
+	fmt.Println("Leader Send: Node", rf.me, "is sending AppendEntries to Node", server)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -375,19 +426,25 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // DoSend AppendEntries
 func (rf *Raft) doLeaderJob() {
 	for id := 0; id < rf.peerNum; id++ {
-		if id != rf.me {
+		if id != rf.me && !rf.getFollowerSendGoroutineState(id) {
+			fmt.Printf("Leader HB: Node %v thinking its goroutine to send HB to Node %v is not running, Starting \n", rf.me, id)
+			rf.setFollowerSendGoroutineState(id, true)
 			go func(id int) {
-				ok := false
+				defer rf.setFollowerSendGoroutineState(id, false)
 				args := &AppendEntriesArgs{
 					LeaderId: rf.me, Term: rf.getCurrentTerm(),
 				}
 				reply := &AppendEntriesReply{}
-				for !ok {
+				for ok := rf.sendAppendEntries(id, args, reply); !ok; {
 					ok = rf.sendAppendEntries(id, args, reply)
+					fmt.Printf("Retrying SendAppendEntries: Node %v think it unsuccessfullly send to Node %v \n", rf.me, id)
 				}
-				if reply.Term > rf.getCurrentTerm() { //STATE CHANGE 5
+				fmt.Printf("Leader HB: Node %v think it successfullly send to Node %v \n", rf.me, id)
+				if reply.Term != 0 && (!reply.Success || reply.Term > rf.getCurrentTerm()) { //STATE CHANGE 5
+					fmt.Printf("Downgrading: Receving false reply or higher Term %v, Node %v (currentTerm %v) is downgrading to Follower \n", reply.Term, rf.me, rf.getCurrentTerm())
 					rf.setCurrentTerm(reply.Term) //+ALL server rule 2
 				}
+
 			}(id)
 		}
 	}
@@ -411,6 +468,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	if rf.getState() == 2 {
+		// TODO: may need some mutex to handel concurrent
+		index, term = rf.appendLog(command)
+		go rf.doLeaderJob()
+		isLeader = true
+	}
 
 	return index, term, isLeader
 }
@@ -487,6 +550,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteState = VoteState{}
 	rf.state = State{}
 	rf.peerNum = len(rf.peers)
+	rf.log = LogStorage{}
+	rf.log.log = make([]Log, 0)
+	rf.state.hasSendGoroutineLunch = make([]bool, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
