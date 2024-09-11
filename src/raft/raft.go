@@ -218,8 +218,9 @@ func (rf *Raft) setFollowerSendGoroutineState(n int, b bool) {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (3A).
-	term, isleader := rf.getCurrentTerm(), rf.getState() == 2
-	return term, isleader
+	rf.state.mu.Lock()
+	defer rf.state.mu.Unlock()
+	return rf.state.currentTerm, rf.state.code == 2
 }
 
 // save Raft's persistent state to stable storage,
@@ -405,7 +406,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.getCurrentTerm() { // STATE CHANGE 5,6 A leader or a highger term
 		rf.setState(0)
 		rf.setHeartBeatState(true)
-		reply = &AppendEntriesReply{Term: args.Term, Success: true}
+		reply.Term = args.Term
+		reply.Success = true
 		if args.Term > rf.getCurrentTerm() {
 			rf.setCurrentTerm(args.Term) // term sync
 			fmt.Printf("Follower: Node %v is receving AppendEntries, updating current term \n", rf.me)
@@ -413,7 +415,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		fmt.Printf("Follower: Node %v is receving AppendEntries, current term is %v \n", rf.me, rf.getCurrentTerm())
 		return
 	}
-	reply = &AppendEntriesReply{rf.getCurrentTerm(), false}
+	reply.Term = rf.getCurrentTerm()
+	reply.Success = false
 }
 
 // AppendEntries BoradCaster
@@ -440,7 +443,7 @@ func (rf *Raft) doLeaderJob() {
 					ok = rf.sendAppendEntries(id, args, reply)
 					fmt.Printf("Retrying SendAppendEntries: Node %v think it unsuccessfullly send to Node %v \n", rf.me, id)
 				}
-				fmt.Printf("Leader HB: Node %v think it successfullly send to Node %v \n", rf.me, id)
+				fmt.Printf("Leader HB: Node %v think it successfullly send to Node %v, Reply is %v, reply.term: %v \n", rf.me, id, reply.Success, reply.Term)
 				if reply.Term != 0 && (!reply.Success || reply.Term > rf.getCurrentTerm()) { //STATE CHANGE 5
 					fmt.Printf("Downgrading: Receving false reply or higher Term %v, Node %v (currentTerm %v) is downgrading to Follower \n", reply.Term, rf.me, rf.getCurrentTerm())
 					rf.setCurrentTerm(reply.Term) //+ALL server rule 2
