@@ -291,9 +291,10 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	if args.Term > rf.getCurrentTerm() { // STATE CHANGE 6-B a higher term
+		fmt.Printf("Election: Node %v is receiving Vote Req from Node %v\n", rf.me, args.CandidateId)
 		rf.setHeartBeatState(true)
-		rf.voteFor(args.CandidateId)
 		rf.setCurrentTerm(args.Term) // once receive a candidate has larger term, be a follower
+		rf.voteFor(args.CandidateId)
 		reply.VoteGranted = true
 		fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
@@ -499,9 +500,10 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 1000 and 1500
+		// Relection timeout
+		// pause for a random amount of time between 500 and 1000
 		// milliseconds.
-		ms := 1000 + (rand.Int63n(500))
+		ms := 500 + (rand.Int63n(500))
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		// Your code here (3A)
@@ -509,6 +511,7 @@ func (rf *Raft) ticker() {
 		// Paper: broadcast time should be an order of magnitude less than the election timeout
 		// STATE CHANGE 2,3 be Candi
 		if !rf.getHeartBeatState() && rf.getState() != 2 {
+			fmt.Printf("Election: Leader timeout, %v be Candidate\n", rf.me)
 			rf.setState(0) // STATE CHANGE 3, Candi to Candi, set to false to end last elect cycle, see STATE CHANGE 5
 			go rf.beCandadite()
 		}
